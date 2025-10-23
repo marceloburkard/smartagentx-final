@@ -13,7 +13,6 @@ App em Python/Streamlit para:
 ├─ app.py
 ├─ ocr.py
 ├─ llm_agent.py
-├─ supabase_client.py
 ├─ utils.py
 ├─ requirements.txt
 ├─ .env.example
@@ -69,3 +68,18 @@ streamlit run app.py
 - Logs são gravados em `logs/app.log` e também exibidos no app.
 - É possível reprocessar OCR e LLM por item.
 - Você pode editar manualmente o texto OCR e salvar antes de enviar para a LLM.
+
+## Licença
+
+Este projeto está licenciado sob a **Licença MIT** - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+### Resumo da Licença MIT
+
+Esta licença permite que você:
+- ✅ Use o software comercialmente
+- ✅ Modifique o código
+- ✅ Distribua o software
+- ✅ Use em projetos privados
+- ✅ Sublicencie
+
+**Única condição**: Incluir o aviso de copyright e a licença em todas as cópias ou partes substanciais do software.
