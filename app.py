@@ -84,15 +84,106 @@ def list_invoices(limit: int = 100):
     except Exception as e:
         raise RuntimeError(f"Erro ao listar invoices: {str(e)}")
 
+def extract_json_from_llm_response(response_text):
+    """Extract JSON content from LLM response text, focusing on invoice data structure"""
+    if not response_text:
+        return None
+    
+    # If response_text is already a dict, check if it contains invoice data structure
+    if isinstance(response_text, dict):
+        # If it's a complex response with 'raw' field, extract the content
+        if 'raw' in response_text and isinstance(response_text['raw'], dict):
+            raw_content = response_text['raw']
+            if 'choices' in raw_content and len(raw_content['choices']) > 0:
+                message_content = raw_content['choices'][0].get('message', {}).get('content', '')
+                return extract_invoice_json_from_content(message_content)
+        
+        # If it's a complex response with 'content' field, extract from content
+        if 'content' in response_text:
+            return extract_invoice_json_from_content(response_text['content'])
+        
+        # If it already looks like invoice data (has emitente, CNPJ_CPF, etc.), return it
+        if any(key in response_text for key in ['emitente', 'CNPJ_CPF', 'itens', 'valores']):
+            return response_text
+        
+        return response_text
+    
+    # If response_text is not a string, convert it
+    if not isinstance(response_text, str):
+        response_text = str(response_text)
+    
+    return extract_invoice_json_from_content(response_text)
+
+def extract_invoice_json_from_content(content):
+    """Extract invoice JSON from text content"""
+    import re
+    
+    # Clean the text - remove common LLM prefixes/suffixes
+    cleaned_text = content.strip()
+    
+    # Remove common prefixes that LLMs might add
+    prefixes_to_remove = [
+        "Aqui está a extração e normalização dos dados da nota fiscal em formato JSON:",
+        "Aqui está o JSON:",
+        "Segue o JSON:",
+        "JSON:",
+        "```json",
+        "```",
+        "Resposta:",
+        "Resultado:"
+    ]
+    
+    for prefix in prefixes_to_remove:
+        if cleaned_text.lower().startswith(prefix.lower()):
+            cleaned_text = cleaned_text[len(prefix):].strip()
+    
+    # Remove trailing ``` if present
+    if cleaned_text.endswith("```"):
+        cleaned_text = cleaned_text[:-3].strip()
+    
+    # Remove any text after the JSON (like "Observações:")
+    json_end_pattern = r'\n\nObservações?:'
+    cleaned_text = re.split(json_end_pattern, cleaned_text)[0]
+    
+    # Try to parse the cleaned text as JSON
+    try:
+        parsed_json = json.loads(cleaned_text)
+        # Verify it looks like invoice data
+        if isinstance(parsed_json, dict) and any(key in parsed_json for key in ['emitente', 'CNPJ_CPF', 'itens', 'valores']):
+            return parsed_json
+    except json.JSONDecodeError:
+        pass
+    
+    # Look for JSON objects in the text (more robust pattern)
+    json_pattern = r'\{(?:[^{}]|{[^{}]*})*\}'
+    matches = re.findall(json_pattern, cleaned_text, re.DOTALL)
+    
+    if matches:
+        # Try to parse the largest match (most likely to be the complete JSON)
+        largest_match = max(matches, key=len)
+        try:
+            parsed_json = json.loads(largest_match)
+            # Verify it looks like invoice data
+            if isinstance(parsed_json, dict) and any(key in parsed_json for key in ['emitente', 'CNPJ_CPF', 'itens', 'valores']):
+                return parsed_json
+        except json.JSONDecodeError:
+            # Try all matches
+            for match in matches:
+                try:
+                    parsed_json = json.loads(match)
+                    # Verify it looks like invoice data
+                    if isinstance(parsed_json, dict) and any(key in parsed_json for key in ['emitente', 'CNPJ_CPF', 'itens', 'valores']):
+                        return parsed_json
+                except json.JSONDecodeError:
+                    continue
+    
+    # If no valid invoice JSON found, return a structured error response
+    return {"error": "Resposta não contém JSON válido de nota fiscal", "raw_response": content[:200] + "..." if len(content) > 200 else content}
+
 st.set_page_config(page_title="Invoice OCR + LLM", layout="wide")
 
 st.title("Invoice OCR + LLM")
 
-with st.sidebar:
-    st.subheader("Config")
-    st.write("Provedor LLM e modelo podem ser ajustados no .env")
-    if st.button("Atualizar lista"):
-        st.session_state["_refresh"] = True
 
 st.subheader("Upload de notas fiscais")
 uploaded_files = st.file_uploader("Selecione imagens ou PDFs", type=[e.strip(".") for e in SUPPORTED_DOC_EXT], accept_multiple_files=True)
@@ -149,7 +240,25 @@ except Exception as e:
 if not invoices:
     st.info("Nenhum registro ainda.")
 else:
+    # Agrupar invoices por filename e manter apenas o mais recente de cada arquivo
+    unique_invoices = {}
     for inv in invoices:
+        filename = inv.get('filename')
+        if filename not in unique_invoices:
+            unique_invoices[filename] = inv
+        else:
+            # Comparar timestamps para manter o mais recente
+            current_created = inv.get('created_at', '')
+            existing_created = unique_invoices[filename].get('created_at', '')
+            if current_created > existing_created:
+                unique_invoices[filename] = inv
+    
+    # Ordenar os invoices únicos por data de criação (mais recente primeiro)
+    sorted_unique_invoices = sorted(unique_invoices.values(), 
+                                   key=lambda x: x.get('created_at', ''), 
+                                   reverse=True)
+    
+    for inv in sorted_unique_invoices:
         with st.expander(f"{inv.get('filename')} — status: {inv.get('status')} — id: {inv.get('id')}"):
             col1, col2, col3 = st.columns([2,2,1])
 
@@ -157,10 +266,11 @@ else:
                 st.caption("Texto OCR (editável)")
                 key_text = f"ocr_text_{inv['id']}"
                 text_val = inv.get("ocr_text") or ""
-                new_text = st.text_area("",
+                new_text = st.text_area("Texto OCR",
                                         value=st.session_state.get(key_text, text_val),
                                         height=200,
-                                        key=key_text)
+                                        key=key_text,
+                                        label_visibility="collapsed")
                 if st.button("Salvar texto OCR", key=f"save_{inv['id']}"):
                     try:
                         update_invoice(inv["id"], ocr_text=new_text)
@@ -171,7 +281,15 @@ else:
             with col2:
                 st.caption("Resposta LLM (visualização)")
                 llm_resp = inv.get("llm_response")
-                st.json(llm_resp or {"info": "Sem resposta ainda"})
+                if llm_resp:
+                    # Extract JSON content from LLM response
+                    json_content = extract_json_from_llm_response(llm_resp)
+                    if json_content:
+                        st.json(json_content)
+                    else:
+                        st.info("Resposta LLM não contém JSON válido")
+                else:
+                    st.json({"info": "Sem resposta ainda"})
 
             with col3:
                 st.caption("Ações")
@@ -204,10 +322,3 @@ else:
             if err:
                 st.error(f"Erro registrado: {err}")
 
-st.divider()
-st.subheader("Logs")
-try:
-    with open("logs/app.log", "r", encoding="utf-8") as fh:
-        st.code(fh.read()[-4000:], language="text")
-except FileNotFoundError:
-    st.write("Sem logs ainda.")
