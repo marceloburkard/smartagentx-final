@@ -219,24 +219,3 @@ api_keys.json
 *.tar.gz
 *.rar
 *.7z
-
-# Image files (if not needed in repo)
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.bmp
-*.tiff
-*.svg
-*.ico
-
-# PDF files (if not needed in repo)
-*.pdf
-
-# Office files (if not needed in repo)
-*.doc
-*.docx
-*.xls
-*.xlsx
-*.ppt
-*.pptx
