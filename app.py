@@ -1,4 +1,4 @@
-import os, io, json, traceback, datetime
+import os, io, json, traceback, datetime, uuid
 import streamlit as st
 import requests
 from dotenv import load_dotenv
@@ -182,6 +182,31 @@ def extract_invoice_json_from_content(content):
 
 st.set_page_config(page_title="Invoice OCR + LLM", layout="wide")
 
+# CSS customizado para modificar largura dos modais
+st.markdown("""
+<style>
+/* Modificar largura dos modais para 90% da tela */
+div[data-testid="stDialog"] {
+    width: 90% !important;
+    max-width: 90% !important;
+}
+
+/* Ajustar o conteúdo interno do modal */
+div[data-testid="stDialog"] > div {
+    width: 100% !important;
+    max-width: 100% !important;
+}
+
+/* Garantir que o modal seja responsivo */
+@media (max-width: 768px) {
+    div[data-testid="stDialog"] {
+        width: 95% !important;
+        max-width: 95% !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("Invoice OCR + LLM")
 
 
@@ -300,18 +325,37 @@ def do_llm(invoice_id: str, text: str):
 
 # Funções para modalboxes usando st.dialog
 @st.dialog("📝 Editar Texto OCR")
-def show_ocr_dialog(invoice_id: str, filename: str, current_text: str):
+def show_ocr_dialog(invoice_id: str, filename: str, current_text: str, image_path: str = None):
     """Modalbox para editar texto OCR"""
     st.markdown(f"**Arquivo:** {filename}")
     st.markdown("---")
     
-    key_text = f"ocr_text_{invoice_id}"
-    new_text = st.text_area("Texto OCR (editável)",
-                            value=current_text,
-                            height=400,
-                            key=key_text,
-                            label_visibility="collapsed",
-                            placeholder="Digite ou edite o texto OCR aqui...")
+    # Criar duas colunas: uma para a imagem e outra para o texto OCR
+    col_image, col_text = st.columns([1, 1])
+    
+    with col_image:
+        st.markdown("**Imagem Original:**")
+        if image_path and os.path.exists(image_path):
+            # Verificar se é uma imagem suportada pelo Streamlit
+            image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
+            file_ext = os.path.splitext(image_path)[1].lower()
+            
+            if file_ext in image_extensions:
+                st.image(image_path, caption=filename, use_column_width=True)
+            else:
+                st.info("📄 Arquivo PDF - visualização não disponível")
+        else:
+            st.info("🖼️ Imagem não encontrada")
+    
+    with col_text:
+        st.markdown("**Texto OCR (editável):**")
+        key_text = f"ocr_text_{invoice_id}"
+        new_text = st.text_area("",
+                                value=current_text,
+                                height=400,
+                                key=key_text,
+                                label_visibility="collapsed",
+                                placeholder="Digite ou edite o texto OCR aqui...")
     
     st.markdown("---")
     
@@ -436,8 +480,7 @@ else:
             action_options = ["Selecione uma ação..."]
             
             # Adicionar opções baseadas no status do arquivo
-            if inv.get("ocr_text"):
-                action_options.append("📝 Visualizar/Editar OCR")
+            action_options.append("📝 Visualizar/Editar OCR")
             
             if inv.get("llm_response"):
                 action_options.append("🤖 Visualizar Resposta LLM")
@@ -459,7 +502,8 @@ else:
             # Executar ação selecionada
             if selected_action == "📝 Visualizar/Editar OCR":
                 text_val = inv.get("ocr_text") or ""
-                show_ocr_dialog(inv["id"], inv.get('filename', 'N/A'), text_val)
+                image_path = inv.get("image_path")
+                show_ocr_dialog(inv["id"], inv.get('filename', 'N/A'), text_val, image_path)
             
             elif selected_action == "🤖 Visualizar Resposta LLM":
                 llm_resp = inv.get("llm_response")
