@@ -41,6 +41,7 @@ create table if not exists public.invoices (
   filename text not null,
   status text not null check (status in ('uploaded','ocr_done','llm_sent','error')),
   ocr_text text,
+  image_path text,
   llm_response jsonb,
   error text,
   created_at timestamp with time zone default now(),
