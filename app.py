@@ -217,9 +217,76 @@ def do_llm(invoice_id: str, text: str):
     try:
         client = LLMClient()
         prompt = (
-            "Segue o texto OCR de uma nota fiscal. Extraia os principais campos (emitente, CNPJ/CPF,"
-            " data, itens, valores, impostos) e retorne em JSON bem estruturado, com campos ausentes como null."
-            "\n\n"
+            "Segue o texto OCR de uma nota fiscal emitida no Brasil de acordo com as regras vigentes. Extraia os principais campos (emitente, CNPJ/CPF, "
+            "data, itens, valores, impostos) e retorne em JSON bem estruturado de acordo com o schema abaixo, com campos ausentes como null. "
+            "Para campos de endereço, caso a informação não esteja presente no texto OCR ou seja incompleta ou seja inválida, retorne null. "
+            "O seu retorno deve ser apenas o JSON, sem nenhum outro texto adicional. É extremamente importante que você retorne APENAS o JSON, sem nenhum outro texto adicional."
+            "Use exatamente o formato definido no schema abaixo:\n\n"
+            "JSON Schema:\n"
+            "{\n"
+            '  "$schema": "https://json-schema.org/draft/2020-12/schema",\n'
+            '  "title": "NotaFiscalSchema",\n'
+            '  "type": "object",\n'
+            '  "properties": {\n'
+            '    "estabelecimento": {\n'
+            '      "type": "object",\n'
+            '      "properties": {\n'
+            '        "nome": { "type": "string" },\n'
+            '        "cnpj": { "type": "string" },\n'
+            '        "telefone": { "type": "string" },\n'
+            '        "inscricao_estadual": { "type": "string" },\n'
+            '        "endereco": {\n'
+            '          "type": "object",\n'
+            '          "properties": {\n'
+            '            "logradouro": { "type": "string" },\n'
+            '            "bairro": { "type": "string" },\n'
+            '            "cidade": { "type": "string" },\n'
+            '            "estado": { "type": "string" }\n'
+            '          },\n'
+            '          "required": ["logradouro", "bairro", "cidade", "estado"]\n'
+            '        }\n'
+            '      },\n'
+            '      "required": ["nome", "cnpj", "telefone", "inscricao_estadual", "endereco"]\n'
+            '    },\n'
+            '    "nota_fiscal": {\n'
+            '      "type": "object",\n'
+            '      "properties": {\n'
+            '        "tipo": { "type": "string" },\n'
+            '        "numero": { "type": "string" },\n'
+            '        "serie": { "type": "string" },\n'
+            '        "data_emissao": { "type": "string", "format": "date-time" },\n'
+            '        "chave_acesso": { "type": "string" },\n'
+            '        "protocolo_autorizacao": { "type": "string" },\n'
+            '        "consumidor": { "type": "string" }\n'
+            '      },\n'
+            '      "required": ["tipo", "numero", "serie", "data_emissao", "chave_acesso", "protocolo_autorizacao", "consumidor"]\n'
+            '    },\n'
+            '    "itens": {\n'
+            '      "type": "array",\n'
+            '      "items": {\n'
+            '        "type": "object",\n'
+            '        "properties": {\n'
+            '          "codigo": { "type": ["string", "null"] },\n'
+            '          "descricao": { "type": "string" },\n'
+            '          "quantidade": { "type": "number" },\n'
+            '          "valor_unitario": { "type": "number" },\n'
+            '          "valor_total": { "type": "number" }\n'
+            '        },\n'
+            '        "required": ["descricao", "quantidade", "valor_unitario", "valor_total"]\n'
+            '      }\n'
+            '    },\n'
+            '    "totais": {\n'
+            '      "type": "object",\n'
+            '      "properties": {\n'
+            '        "valor_total": { "type": "number" },\n'
+            '        "forma_pagamento": { "type": "string" },\n'
+            '        "valor_pago": { "type": "number" }\n'
+            '      },\n'
+            '      "required": ["valor_total", "forma_pagamento", "valor_pago"]\n'
+            '    }\n'
+            '  },\n'
+            '  "required": ["estabelecimento", "nota_fiscal", "itens", "totais"]\n'
+            "}\n\n"
             f"Texto OCR:\n{text}"
         )
         resp = client.send(prompt)
