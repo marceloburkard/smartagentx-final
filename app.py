@@ -53,7 +53,7 @@ def create_invoice(filename: str):
 def update_invoice(invoice_id: str, **fields):
     """Update an existing invoice record using Supabase REST API"""
     _ensure_config()
-    fields["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
+    fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     url = f"{REST_URL}?id=eq.{invoice_id}"
     try:
         response = requests.patch(url, headers=HEADERS, data=json.dumps(fields), timeout=30)
@@ -298,6 +298,62 @@ def do_llm(invoice_id: str, text: str):
         update_invoice(invoice_id, status="error", error=str(e))
         st.error(f"LLM falhou: {e}")
 
+# Funções para modalboxes usando st.dialog
+@st.dialog("📝 Editar Texto OCR")
+def show_ocr_dialog(invoice_id: str, filename: str, current_text: str):
+    """Modalbox para editar texto OCR"""
+    st.markdown(f"**Arquivo:** {filename}")
+    st.markdown("---")
+    
+    key_text = f"ocr_text_{invoice_id}"
+    new_text = st.text_area("Texto OCR (editável)",
+                            value=current_text,
+                            height=400,
+                            key=key_text,
+                            label_visibility="collapsed",
+                            placeholder="Digite ou edite o texto OCR aqui...")
+    
+    st.markdown("---")
+    
+    col_save, col_close, col_space = st.columns([1, 1, 2])
+    
+    with col_save:
+        if st.button("💾 Salvar Alterações", type="primary"):
+            try:
+                update_invoice(invoice_id, ocr_text=new_text)
+                st.success("✅ Texto salvo com sucesso!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Erro ao salvar texto: {e}")
+    
+    with col_close:
+        if st.button("❌ Cancelar", key=f"close_ocr_{invoice_id}"):
+            st.stop()
+
+@st.dialog("🤖 Resposta do LLM")
+def show_llm_dialog(filename: str, llm_response):
+    """Modalbox para visualizar resposta LLM"""
+    st.markdown(f"**Arquivo:** {filename}")
+    st.markdown("---")
+    
+    if llm_response:
+        # Extract JSON content from LLM response
+        json_content = extract_json_from_llm_response(llm_response)
+        if json_content:
+            st.markdown("**Dados extraídos:**")
+            st.json(json_content)
+        else:
+            st.info("⚠️ Resposta LLM não contém JSON válido")
+            st.markdown("**Resposta bruta:**")
+            st.text_area("", value=str(llm_response), height=200, disabled=True)
+    else:
+        st.info("ℹ️ Sem resposta LLM ainda")
+    
+    st.markdown("---")
+    
+    if st.button("❌ Fechar", key=f"close_llm_{filename}"):
+        st.stop()
+
 try:
     invoices = list_invoices(limit=200)
 except Exception as e:
@@ -325,67 +381,108 @@ else:
                                    key=lambda x: x.get('created_at', ''), 
                                    reverse=True)
     
+    # Criar tabela com cabeçalhos
+    st.subheader("Arquivos Processados")
+    
+    # Cabeçalhos da tabela
+    col1, col2, col3, col4 = st.columns([4, 2, 2, 2])
+    
+    with col1:
+        st.markdown("**Nome do Arquivo**")
+    with col2:
+        st.markdown("**Status**")
+    with col3:
+        st.markdown("**Data de Criação**")
+    with col4:
+        st.markdown("**Ações**")
+    
+    st.divider()
+    
+    # Exibir cada invoice em uma linha da tabela
     for inv in sorted_unique_invoices:
-        with st.expander(f"{inv.get('filename')} — status: {inv.get('status')} — id: {inv.get('id')}"):
-            col1, col2, col3 = st.columns([2,2,1])
-
-            with col1:
-                st.caption("Texto OCR (editável)")
-                key_text = f"ocr_text_{inv['id']}"
+        col1, col2, col3, col4 = st.columns([4, 2, 2, 2])
+        
+        with col1:
+            st.write(inv.get('filename', 'N/A'))
+        
+        with col2:
+            status = inv.get('status', 'N/A')
+            if status == 'error':
+                st.error(status)
+            elif status == 'llm_sent':
+                st.success(status)
+            elif status == 'ocr_done':
+                st.info(status)
+            else:
+                st.write(status)
+        
+        with col3:
+            created_at = inv.get('created_at', '')
+            if created_at:
+                # Formatar data para exibição mais amigável
+                try:
+                    dt = datetime.datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    st.write(dt.strftime('%d/%m/%Y %H:%M'))
+                except:
+                    st.write(created_at[:16])  # Mostrar apenas parte da data
+            else:
+                st.write('N/A')
+        
+        with col4:
+            # Dropdown de ações
+            file_cache = st.session_state.get("files_cache", {}).get(inv["id"])
+            
+            # Opções disponíveis para o dropdown
+            action_options = ["Selecione uma ação..."]
+            
+            # Adicionar opções baseadas no status do arquivo
+            if inv.get("ocr_text"):
+                action_options.append("📝 Visualizar/Editar OCR")
+            
+            if inv.get("llm_response"):
+                action_options.append("🤖 Visualizar Resposta LLM")
+            
+            # Sempre disponíveis
+            action_options.extend([
+                "🔄 Executar OCR",
+                "🚀 Enviar para LLM"
+            ])
+            
+            # Dropdown de ações
+            selected_action = st.selectbox(
+                "Ações",
+                options=action_options,
+                key=f"action_{inv['id']}",
+                label_visibility="collapsed"
+            )
+            
+            # Executar ação selecionada
+            if selected_action == "📝 Visualizar/Editar OCR":
                 text_val = inv.get("ocr_text") or ""
-                new_text = st.text_area("Texto OCR",
-                                        value=st.session_state.get(key_text, text_val),
-                                        height=200,
-                                        key=key_text,
-                                        label_visibility="collapsed")
-                if st.button("Salvar texto OCR", key=f"save_{inv['id']}"):
-                    try:
-                        update_invoice(inv["id"], ocr_text=new_text)
-                        st.success("Texto salvo.")
-                    except Exception as e:
-                        st.error(f"Erro ao salvar texto: {e}")
-
-            with col2:
-                st.caption("Resposta LLM (visualização)")
+                show_ocr_dialog(inv["id"], inv.get('filename', 'N/A'), text_val)
+            
+            elif selected_action == "🤖 Visualizar Resposta LLM":
                 llm_resp = inv.get("llm_response")
-                if llm_resp:
-                    # Extract JSON content from LLM response
-                    json_content = extract_json_from_llm_response(llm_resp)
-                    if json_content:
-                        st.json(json_content)
-                    else:
-                        st.info("Resposta LLM não contém JSON válido")
+                show_llm_dialog(inv.get('filename', 'N/A'), llm_resp)
+            
+            elif selected_action == "🔄 Executar OCR":
+                if file_cache is None:
+                    st.warning("Arquivo não está em cache nesta sessão. Refaça o upload para OCR imediato.")
                 else:
-                    st.json({"info": "Sem resposta ainda"})
-
-            with col3:
-                st.caption("Ações")
-                file_cache = st.session_state.get("files_cache", {}).get(inv["id"])
-                if st.button("Rodar OCR", key=f"ocr_{inv['id']}"):
-                    if file_cache is None:
-                        st.warning("Arquivo não está em cache nesta sessão. Refaça o upload para OCR imediato.")
-                    else:
-                        do_ocr(inv["id"], file_cache, inv["filename"])
-
-                if st.button("Enviar LLM", key=f"llm_{inv['id']}"):
-                    if not new_text:
-                        st.warning("Texto OCR vazio.")
-                    else:
-                        do_llm(inv["id"], new_text)
-
-                if st.button("Reprocessar OCR", key=f"reocr_{inv['id']}"):
-                    if file_cache is None:
-                        st.warning("Arquivo não está em cache nesta sessão. Refaça o upload para reprocessar OCR.")
-                    else:
-                        do_ocr(inv["id"], file_cache, inv["filename"])
-
-                if st.button("Reprocessar LLM", key=f"rellm_{inv['id']}"):
-                    if not new_text:
-                        st.warning("Texto OCR vazio.")
-                    else:
-                        do_llm(inv["id"], new_text)
-
-            err = inv.get("error")
-            if err:
-                st.error(f"Erro registrado: {err}")
+                    do_ocr(inv["id"], file_cache, inv["filename"])
+            
+            elif selected_action == "🚀 Enviar para LLM":
+                text_val = inv.get("ocr_text") or ""
+                if not text_val:
+                    st.warning("Texto OCR vazio.")
+                else:
+                    do_llm(inv["id"], text_val)
+        
+        
+        # Exibir erro se houver
+        err = inv.get("error")
+        if err:
+            st.error(f"Erro registrado: {err}")
+        
+        st.divider()
 
