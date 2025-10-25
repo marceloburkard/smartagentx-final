@@ -53,7 +53,7 @@ def create_invoice(filename: str):
 def update_invoice(invoice_id: str, **fields):
     """Update an existing invoice record using Supabase REST API"""
     _ensure_config()
-    fields["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    fields["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
     url = f"{REST_URL}?id=eq.{invoice_id}"
     try:
         response = requests.patch(url, headers=HEADERS, data=json.dumps(fields), timeout=30)
