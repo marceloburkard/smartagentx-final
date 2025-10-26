@@ -26,7 +26,7 @@ class LLMClient:
         data = {
             "model": self.model or "gpt-4o-mini",
             "messages": [
-                {"role": "system", "content": "Você é um assistente que extrai e valida dados de notas fiscais. Usei ocr (tesseract) para extrair os dados de uma nota fiscal que estava em formato jpeg, você extrai os dados da nota fiscal de forma normalizada em formado json"},
+                {"role": "system", "content": "Você é um assistente que extrai e valida dados de notas fiscais brasileiras. Usei OCR (Tesseract com suporte a Português) para extrair os dados de uma nota fiscal, você extrai os dados da nota fiscal de forma normalizada em formato json"},
                 {"role": "user", "content": prompt}
             ]
         }
