@@ -1,4 +1,4 @@
-import os, io, json, traceback, datetime, uuid
+import os, io, json, traceback, datetime, uuid, time, base64
 import streamlit as st
 import requests
 from dotenv import load_dotenv
@@ -213,12 +213,61 @@ st.title("Invoice OCR + LLM")
 st.subheader("Upload de notas fiscais")
 uploaded_files = st.file_uploader("Selecione imagens ou PDFs", type=[e.strip(".") for e in SUPPORTED_DOC_EXT], accept_multiple_files=True)
 
+# Initialize session state for tracking uploaded files
+if "uploaded_filenames" not in st.session_state:
+    st.session_state.uploaded_filenames = {}
+if "files_cache" not in st.session_state:
+    st.session_state.files_cache = {}
+
 if uploaded_files:
     for f in uploaded_files:
         try:
-            inv = create_invoice(f.name)
-            st.success(f"Arquivo registrado: {f.name}")
-            st.session_state.setdefault("files_cache", {})[inv["id"]] = f.read()
+            # Check if this file was already uploaded (avoid duplicates)
+            if f.name not in st.session_state.uploaded_filenames:
+                # Read file bytes first
+                file_bytes = f.read()
+                
+                # Convert to base64 for storage in database
+                file_base64 = base64.b64encode(file_bytes).decode('utf-8')
+                
+                # Create invoice record
+                inv = create_invoice(f.name)
+                invoice_id = inv["id"]
+                
+                # Get file extension and MIME type
+                file_extension = os.path.splitext(f.name)[1].lower()
+                mime_types = {
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.png': 'image/png',
+                    '.gif': 'image/gif',
+                    '.bmp': 'image/bmp',
+                    '.webp': 'image/webp',
+                    '.tiff': 'image/tiff',
+                    '.pdf': 'application/pdf'
+                }
+                mime_type = mime_types.get(file_extension, 'application/octet-stream')
+                
+                # Update invoice with base64 image data
+                update_invoice(invoice_id, 
+                              image_data=file_base64,
+                              image_mime_type=mime_type,
+                              image_filename=f.name)
+                
+                # Store mapping and cache
+                st.session_state.uploaded_filenames[f.name] = invoice_id
+                st.session_state.files_cache[invoice_id] = file_bytes
+                
+                st.success(f"✅ Arquivo registrado: {f.name}")
+                logger.info(f"Arquivo {f.name} registrado com ID {invoice_id}, armazenado em base64 ({len(file_base64)} chars)")
+            else:
+                # File already uploaded, just re-cache it
+                invoice_id = st.session_state.uploaded_filenames[f.name]
+                if invoice_id not in st.session_state.files_cache:
+                    # Re-read and cache if not in cache
+                    file_bytes = f.read()
+                    st.session_state.files_cache[invoice_id] = file_bytes
+                    logger.info(f"Arquivo {f.name} re-cacheado com ID {invoice_id}")
         except Exception as e:
             err = f"Falha ao registrar {f.name}: {e}"
             logger.exception(err)
@@ -325,7 +374,7 @@ def do_llm(invoice_id: str, text: str):
 
 # Funções para modalboxes usando st.dialog
 @st.dialog("📝 Editar Texto OCR")
-def show_ocr_dialog(invoice_id: str, filename: str, current_text: str, image_path: str = None):
+def show_ocr_dialog(invoice_id: str, filename: str, current_text: str, image_data: str = None, image_mime_type: str = None):
     """Modalbox para editar texto OCR"""
     st.markdown(f"**Arquivo:** {filename}")
     st.markdown("---")
@@ -335,17 +384,24 @@ def show_ocr_dialog(invoice_id: str, filename: str, current_text: str, image_pat
     
     with col_image:
         st.markdown("**Imagem Original:**")
-        if image_path and os.path.exists(image_path):
-            # Verificar se é uma imagem suportada pelo Streamlit
-            image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
-            file_ext = os.path.splitext(image_path)[1].lower()
-            
-            if file_ext in image_extensions:
-                st.image(image_path, caption=filename, use_column_width=True)
-            else:
-                st.info("📄 Arquivo PDF - visualização não disponível")
+        if image_data:
+            # Decode base64 and display
+            try:
+                # Check if it's a PDF or image
+                if image_mime_type and 'pdf' in image_mime_type.lower():
+                    st.info("📄 Arquivo PDF - visualização não disponível no modal")
+                    st.caption(f"Tipo: {image_mime_type}")
+                else:
+                    # Decode base64 to bytes
+                    image_bytes = base64.b64decode(image_data)
+                    # Display image from bytes
+                    st.image(image_bytes, caption=filename, use_column_width=True)
+                    st.caption(f"Tipo: {image_mime_type or 'Desconhecido'}")
+            except Exception as e:
+                st.error(f"❌ Erro ao decodificar imagem: {e}")
+                logger.error(f"Erro ao decodificar imagem base64: {e}")
         else:
-            st.info("🖼️ Imagem não encontrada")
+            st.info("🖼️ Imagem não encontrada (arquivo foi enviado antes da atualização do sistema)")
     
     with col_text:
         st.markdown("**Texto OCR (editável):**")
@@ -427,6 +483,7 @@ else:
     
     # Criar tabela com cabeçalhos
     st.subheader("Arquivos Processados")
+    st.caption("📎 = arquivo em cache (pronto para OCR) | 📄 = arquivo não está em cache")
     
     # Cabeçalhos da tabela
     col1, col2, col3, col4 = st.columns([4, 2, 2, 2])
@@ -447,7 +504,11 @@ else:
         col1, col2, col3, col4 = st.columns([4, 2, 2, 2])
         
         with col1:
-            st.write(inv.get('filename', 'N/A'))
+            filename = inv.get('filename', 'N/A')
+            # Check if file is in cache
+            is_cached = inv["id"] in st.session_state.get("files_cache", {})
+            cache_indicator = "📎" if is_cached else "📄"
+            st.write(f"{cache_indicator} {filename}")
         
         with col2:
             status = inv.get('status', 'N/A')
@@ -473,54 +534,141 @@ else:
                 st.write('N/A')
         
         with col4:
-            # Dropdown de ações
-            file_cache = st.session_state.get("files_cache", {}).get(inv["id"])
-            
-            # Opções disponíveis para o dropdown
-            action_options = ["Selecione uma ação..."]
-            
-            # Adicionar opções baseadas no status do arquivo
-            action_options.append("📝 Visualizar/Editar OCR")
-            
-            if inv.get("llm_response"):
-                action_options.append("🤖 Visualizar Resposta LLM")
-            
-            # Sempre disponíveis
-            action_options.extend([
-                "🔄 Executar OCR",
-                "🚀 Enviar para LLM"
-            ])
-            
-            # Dropdown de ações
-            selected_action = st.selectbox(
-                "Ações",
-                options=action_options,
-                key=f"action_{inv['id']}",
-                label_visibility="collapsed"
-            )
-            
-            # Executar ação selecionada
-            if selected_action == "📝 Visualizar/Editar OCR":
-                text_val = inv.get("ocr_text") or ""
-                image_path = inv.get("image_path")
-                show_ocr_dialog(inv["id"], inv.get('filename', 'N/A'), text_val, image_path)
-            
-            elif selected_action == "🤖 Visualizar Resposta LLM":
-                llm_resp = inv.get("llm_response")
-                show_llm_dialog(inv.get('filename', 'N/A'), llm_resp)
-            
-            elif selected_action == "🔄 Executar OCR":
-                if file_cache is None:
-                    st.warning("Arquivo não está em cache nesta sessão. Refaça o upload para OCR imediato.")
-                else:
-                    do_ocr(inv["id"], file_cache, inv["filename"])
-            
-            elif selected_action == "🚀 Enviar para LLM":
-                text_val = inv.get("ocr_text") or ""
-                if not text_val:
-                    st.warning("Texto OCR vazio.")
-                else:
-                    do_llm(inv["id"], text_val)
+            # Usar expander para as ações
+            with st.expander("⚙️ Ações", expanded=False):
+                file_cache = st.session_state.get("files_cache", {}).get(inv["id"])
+                
+                # Botão para visualizar/editar OCR
+                if st.button("📝 Visualizar/Editar OCR", key=f"view_ocr_{inv['id']}", use_container_width=True):
+                    text_val = inv.get("ocr_text") or ""
+                    image_data = inv.get("image_data")
+                    image_mime_type = inv.get("image_mime_type")
+                    show_ocr_dialog(inv["id"], inv.get('filename', 'N/A'), text_val, image_data, image_mime_type)
+                
+                # Botão para visualizar resposta LLM (se disponível)
+                if inv.get("llm_response"):
+                    if st.button("🤖 Ver Resposta LLM", key=f"view_llm_{inv['id']}", use_container_width=True):
+                        llm_resp = inv.get("llm_response")
+                        show_llm_dialog(inv.get('filename', 'N/A'), llm_resp)
+                
+                # Botão para executar OCR
+                if st.button("🔄 Executar OCR", key=f"run_ocr_{inv['id']}", use_container_width=True):
+                    # Debug: log cache status
+                    logger.info(f"OCR solicitado para invoice {inv['id']}, arquivo: {inv.get('filename')}")
+                    logger.info(f"Cache disponível: {file_cache is not None}, Tamanho: {len(file_cache) if file_cache else 0} bytes")
+                    
+                    if file_cache is None:
+                        st.error("⚠️ Arquivo não está em cache. Por favor, faça upload do arquivo novamente usando o campo acima.")
+                        st.info("💡 **Dica**: Mantenha o arquivo selecionado no campo de upload enquanto processa.")
+                    else:
+                        with st.spinner("Processando OCR..."):
+                            try:
+                                text = run_ocr(file_cache, inv["filename"])
+                                update_invoice(inv["id"], status="ocr_done", ocr_text=text, error=None)
+                                st.success(f"✅ OCR concluído: {inv['filename']}")
+                                st.balloons()
+                                # Wait a moment for user to see the message
+                                time.sleep(1)
+                                st.rerun()
+                            except Exception as e:
+                                tb = traceback.format_exc()
+                                logger.error(tb)
+                                update_invoice(inv["id"], status="error", error=str(e))
+                                st.error(f"❌ OCR falhou: {e}")
+                
+                # Botão para enviar para LLM
+                if st.button("🚀 Enviar para LLM", key=f"send_llm_{inv['id']}", use_container_width=True):
+                    text_val = inv.get("ocr_text") or ""
+                    if not text_val:
+                        st.warning("⚠️ Texto OCR vazio. Execute o OCR primeiro.")
+                    else:
+                        with st.spinner("Enviando para LLM..."):
+                            try:
+                                client = LLMClient()
+                                prompt = (
+                                    "Segue o texto OCR de uma nota fiscal emitida no Brasil de acordo com as regras vigentes. Extraia os principais campos (emitente, CNPJ/CPF, "
+                                    "data, itens, valores, impostos) e retorne em JSON bem estruturado de acordo com o schema abaixo, com campos ausentes como null. "
+                                    "Para campos de endereço, caso a informação não esteja presente no texto OCR ou seja incompleta ou seja inválida, retorne null. "
+                                    "O seu retorno deve ser apenas o JSON, sem nenhum outro texto adicional. É extremamente importante que você retorne APENAS o JSON, sem nenhum outro texto adicional."
+                                    "Use exatamente o formato definido no schema abaixo:\n\n"
+                                    "JSON Schema:\n"
+                                    "{\n"
+                                    '  "$schema": "https://json-schema.org/draft/2020-12/schema",\n'
+                                    '  "title": "NotaFiscalSchema",\n'
+                                    '  "type": "object",\n'
+                                    '  "properties": {\n'
+                                    '    "estabelecimento": {\n'
+                                    '      "type": "object",\n'
+                                    '      "properties": {\n'
+                                    '        "nome": { "type": "string" },\n'
+                                    '        "cnpj": { "type": "string" },\n'
+                                    '        "telefone": { "type": "string" },\n'
+                                    '        "inscricao_estadual": { "type": "string" },\n'
+                                    '        "endereco": {\n'
+                                    '          "type": "object",\n'
+                                    '          "properties": {\n'
+                                    '            "logradouro": { "type": "string" },\n'
+                                    '            "bairro": { "type": "string" },\n'
+                                    '            "cidade": { "type": "string" },\n'
+                                    '            "estado": { "type": "string" }\n'
+                                    '          },\n'
+                                    '          "required": ["logradouro", "bairro", "cidade", "estado"]\n'
+                                    '        }\n'
+                                    '      },\n'
+                                    '      "required": ["nome", "cnpj", "telefone", "inscricao_estadual", "endereco"]\n'
+                                    '    },\n'
+                                    '    "nota_fiscal": {\n'
+                                    '      "type": "object",\n'
+                                    '      "properties": {\n'
+                                    '        "tipo": { "type": "string" },\n'
+                                    '        "numero": { "type": "string" },\n'
+                                    '        "serie": { "type": "string" },\n'
+                                    '        "data_emissao": { "type": "string", "format": "date-time" },\n'
+                                    '        "chave_acesso": { "type": "string" },\n'
+                                    '        "protocolo_autorizacao": { "type": "string" },\n'
+                                    '        "consumidor": { "type": "string" }\n'
+                                    '      },\n'
+                                    '      "required": ["tipo", "numero", "serie", "data_emissao", "chave_acesso", "protocolo_autorizacao", "consumidor"]\n'
+                                    '    },\n'
+                                    '    "itens": {\n'
+                                    '      "type": "array",\n'
+                                    '      "items": {\n'
+                                    '        "type": "object",\n'
+                                    '        "properties": {\n'
+                                    '          "codigo": { "type": ["string", "null"] },\n'
+                                    '          "descricao": { "type": "string" },\n'
+                                    '          "quantidade": { "type": "number" },\n'
+                                    '          "valor_unitario": { "type": "number" },\n'
+                                    '          "valor_total": { "type": "number" }\n'
+                                    '        },\n'
+                                    '        "required": ["descricao", "quantidade", "valor_unitario", "valor_total"]\n'
+                                    '      }\n'
+                                    '    },\n'
+                                    '    "totais": {\n'
+                                    '      "type": "object",\n'
+                                    '      "properties": {\n'
+                                    '        "valor_total": { "type": "number" },\n'
+                                    '        "forma_pagamento": { "type": "string" },\n'
+                                    '        "valor_pago": { "type": "number" }\n'
+                                    '      },\n'
+                                    '      "required": ["valor_total", "forma_pagamento", "valor_pago"]\n'
+                                    '    }\n'
+                                    '  },\n'
+                                    '  "required": ["estabelecimento", "nota_fiscal", "itens", "totais"]\n'
+                                    "}\n\n"
+                                    f"Texto OCR:\n{text_val}"
+                                )
+                                resp = client.send(prompt)
+                                update_invoice(inv["id"], status="llm_sent", llm_response=resp, error=None)
+                                st.success("✅ Envio para LLM concluído!")
+                                # Wait a moment for user to see the message
+                                time.sleep(1)
+                                st.rerun()
+                            except Exception as e:
+                                tb = traceback.format_exc()
+                                logger.error(tb)
+                                update_invoice(inv["id"], status="error", error=str(e))
+                                st.error(f"❌ LLM falhou: {e}")
         
         
         # Exibir erro se houver

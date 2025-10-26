@@ -164,6 +164,7 @@ temp/
 
 # Application specific
 uploads/
+uploads_local/
 downloads/
 cache/
 .cache/
