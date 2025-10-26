@@ -362,7 +362,6 @@ if uploaded_files:
                             st.session_state.processed_files.add(invoice_id)
                             
                             status.update(label=f"✅ {f.name} - Processamento completo!", state="complete")
-                            st.balloons()
                             
                         except Exception as e:
                             tb = traceback.format_exc()
