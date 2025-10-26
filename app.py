@@ -211,6 +211,7 @@ st.title("Invoice OCR + LLM")
 
 
 st.subheader("Upload de notas fiscais")
+st.info("ℹ️ **Processamento Automático**: Após o upload, o OCR e análise por LLM serão executados automaticamente. Acompanhe o progresso abaixo.")
 uploaded_files = st.file_uploader("Selecione imagens ou PDFs", type=[e.strip(".") for e in SUPPORTED_DOC_EXT], accept_multiple_files=True)
 
 # Initialize session state for tracking uploaded files
@@ -218,6 +219,8 @@ if "uploaded_filenames" not in st.session_state:
     st.session_state.uploaded_filenames = {}
 if "files_cache" not in st.session_state:
     st.session_state.files_cache = {}
+if "processed_files" not in st.session_state:
+    st.session_state.processed_files = set()
 
 if uploaded_files:
     for f in uploaded_files:
@@ -260,6 +263,114 @@ if uploaded_files:
                 
                 st.success(f"✅ Arquivo registrado: {f.name}")
                 logger.info(f"Arquivo {f.name} registrado com ID {invoice_id}, armazenado em base64 ({len(file_base64)} chars)")
+                
+                # AUTOMATIC PROCESSING: OCR + LLM
+                if invoice_id not in st.session_state.processed_files:
+                    st.info(f"🔄 Processamento automático iniciado para: {f.name}")
+                    
+                    # Step 1: Run OCR
+                    with st.status(f"📄 Processando {f.name}...", expanded=True) as status:
+                        st.write("⏳ Executando OCR...")
+                        try:
+                            text = run_ocr(file_bytes, f.name)
+                            update_invoice(invoice_id, status="ocr_done", ocr_text=text, error=None)
+                            st.write("✅ OCR concluído!")
+                            logger.info(f"OCR automático concluído para {f.name}")
+                            
+                            # Step 2: Send to LLM
+                            st.write("⏳ Enviando para LLM...")
+                            client = LLMClient()
+                            prompt = (
+                                "Segue o texto OCR de uma nota fiscal emitida no Brasil de acordo com as regras vigentes. Extraia os principais campos (emitente, CNPJ/CPF, "
+                                "data, itens, valores, impostos) e retorne em JSON bem estruturado de acordo com o schema abaixo, com campos ausentes como null. "
+                                "Para campos de endereço, caso a informação não esteja presente no texto OCR ou seja incompleta ou seja inválida, retorne null. "
+                                "O seu retorno deve ser apenas o JSON, sem nenhum outro texto adicional. É extremamente importante que você retorne APENAS o JSON, sem nenhum outro texto adicional."
+                                "Use exatamente o formato definido no schema abaixo:\n\n"
+                                "JSON Schema:\n"
+                                "{\n"
+                                '  "$schema": "https://json-schema.org/draft/2020-12/schema",\n'
+                                '  "title": "NotaFiscalSchema",\n'
+                                '  "type": "object",\n'
+                                '  "properties": {\n'
+                                '    "estabelecimento": {\n'
+                                '      "type": "object",\n'
+                                '      "properties": {\n'
+                                '        "nome": { "type": "string" },\n'
+                                '        "cnpj": { "type": "string" },\n'
+                                '        "telefone": { "type": "string" },\n'
+                                '        "inscricao_estadual": { "type": "string" },\n'
+                                '        "endereco": {\n'
+                                '          "type": "object",\n'
+                                '          "properties": {\n'
+                                '            "logradouro": { "type": "string" },\n'
+                                '            "bairro": { "type": "string" },\n'
+                                '            "cidade": { "type": "string" },\n'
+                                '            "estado": { "type": "string" }\n'
+                                '          },\n'
+                                '          "required": ["logradouro", "bairro", "cidade", "estado"]\n'
+                                '        }\n'
+                                '      },\n'
+                                '      "required": ["nome", "cnpj", "telefone", "inscricao_estadual", "endereco"]\n'
+                                '    },\n'
+                                '    "nota_fiscal": {\n'
+                                '      "type": "object",\n'
+                                '      "properties": {\n'
+                                '        "tipo": { "type": "string" },\n'
+                                '        "numero": { "type": "string" },\n'
+                                '        "serie": { "type": "string" },\n'
+                                '        "data_emissao": { "type": "string", "format": "date-time" },\n'
+                                '        "chave_acesso": { "type": "string" },\n'
+                                '        "protocolo_autorizacao": { "type": "string" },\n'
+                                '        "consumidor": { "type": "string" }\n'
+                                '      },\n'
+                                '      "required": ["tipo", "numero", "serie", "data_emissao", "chave_acesso", "protocolo_autorizacao", "consumidor"]\n'
+                                '    },\n'
+                                '    "itens": {\n'
+                                '      "type": "array",\n'
+                                '      "items": {\n'
+                                '        "type": "object",\n'
+                                '        "properties": {\n'
+                                '          "codigo": { "type": ["string", "null"] },\n'
+                                '          "descricao": { "type": "string" },\n'
+                                '          "quantidade": { "type": "number" },\n'
+                                '          "valor_unitario": { "type": "number" },\n'
+                                '          "valor_total": { "type": "number" }\n'
+                                '        },\n'
+                                '        "required": ["descricao", "quantidade", "valor_unitario", "valor_total"]\n'
+                                '      }\n'
+                                '    },\n'
+                                '    "totais": {\n'
+                                '      "type": "object",\n'
+                                '      "properties": {\n'
+                                '        "valor_total": { "type": "number" },\n'
+                                '        "forma_pagamento": { "type": "string" },\n'
+                                '        "valor_pago": { "type": "number" }\n'
+                                '      },\n'
+                                '      "required": ["valor_total", "forma_pagamento", "valor_pago"]\n'
+                                '    }\n'
+                                '  },\n'
+                                '  "required": ["estabelecimento", "nota_fiscal", "itens", "totais"]\n'
+                                "}\n\n"
+                                f"Texto OCR:\n{text}"
+                            )
+                            resp = client.send(prompt)
+                            update_invoice(invoice_id, status="llm_sent", llm_response=resp, error=None)
+                            st.write("✅ Processamento LLM concluído!")
+                            logger.info(f"LLM automático concluído para {f.name}")
+                            
+                            # Mark as processed
+                            st.session_state.processed_files.add(invoice_id)
+                            
+                            status.update(label=f"✅ {f.name} - Processamento completo!", state="complete")
+                            st.balloons()
+                            
+                        except Exception as e:
+                            tb = traceback.format_exc()
+                            logger.error(tb)
+                            update_invoice(invoice_id, status="error", error=str(e))
+                            status.update(label=f"❌ {f.name} - Erro no processamento", state="error")
+                            st.error(f"Erro ao processar: {e}")
+                
             else:
                 # File already uploaded, just re-cache it
                 invoice_id = st.session_state.uploaded_filenames[f.name]
